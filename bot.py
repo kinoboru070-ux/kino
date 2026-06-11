@@ -327,7 +327,7 @@ async def createref_get_name(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Iltimos, bo‘sh bo‘lmagan nom kiriting.")
         return WAITING_REF_NAME
 
-    bot_username = "kinokinoborbot"  # O‘z username bilan almashtiring
+    bot_username = "kinokinobor"  # O‘z username bilan almashtiring
     while True:
         code = secrets.token_hex(3)
         if not await check_referral_code(code):
