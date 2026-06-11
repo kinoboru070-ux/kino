@@ -20,7 +20,6 @@ from database import (
     get_week_users, get_active_users_last_24h,
     get_all_user_ids, create_referral, check_referral_code, get_all_referrals,
     set_ad, get_ad, remove_ad, increment_ad_count,
-    # mandatory subscriptions
     get_active_mandatory_subs, is_user_completed_sub, mark_user_completed_sub,
     add_mandatory_subscription, remove_mandatory_subscription, list_mandatory_subscriptions
 )
@@ -45,31 +44,33 @@ async def send_ad(bot, chat_id):
     ad = await get_ad()
     if not ad:
         return
-    content_type, file_id, text, caption, _ = ad["content_type"], ad["file_id"], ad["text"], ad["caption"], ad["send_count"]
+    content_type = ad["content_type"]
+    file_id = ad["file_id"]
+    text = ad["text"]
+    caption = ad["caption"] or ""
     try:
         if content_type == "text":
             await bot.send_message(chat_id=chat_id, text=text)
         elif content_type == "photo":
-            await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption or "")
+            await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
         elif content_type == "video":
-            await bot.send_video(chat_id=chat_id, video=file_id, caption=caption or "")
+            await bot.send_video(chat_id=chat_id, video=file_id, caption=caption)
         elif content_type == "document":
-            await bot.send_document(chat_id=chat_id, document=file_id, caption=caption or "")
+            await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
         elif content_type == "audio":
-            await bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption or "")
+            await bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption)
         elif content_type == "voice":
-            await bot.send_voice(chat_id=chat_id, voice=file_id, caption=caption or "")
+            await bot.send_voice(chat_id=chat_id, voice=file_id, caption=caption)
         elif content_type == "animation":
-            await bot.send_animation(chat_id=chat_id, animation=file_id, caption=caption or "")
+            await bot.send_animation(chat_id=chat_id, animation=file_id, caption=caption)
         else:
             return
         await increment_ad_count()
     except Exception as e:
         print(f"Reklama yuborishda xatolik: {e}")
 
-# -------------------- Majburiy obuna tekshiruvi (Telegram) --------------------
+# -------------------- Telegram kanal tekshiruvi --------------------
 async def check_telegram_membership(bot, user_id, chat_identifier):
-    # chat_identifier: @username yoki -100xxxxx
     try:
         member = await bot.get_chat_member(chat_id=chat_identifier, user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
@@ -77,7 +78,7 @@ async def check_telegram_membership(bot, user_id, chat_identifier):
         print(f"Telegram membership check error: {e}")
         return False
 
-# -------------------- Majburiy obuna prompt (YouTube/Instagram uchun 5 soniya) --------------------
+# -------------------- Majburiy obuna prompt (YouTube/Instagram) --------------------
 async def send_subscription_prompt(update: Update, context: CallbackContext, sub_id: int, sub_type: str, identifier: str):
     user_id = update.effective_user.id
     if sub_type == "telegram":
@@ -96,11 +97,10 @@ async def send_subscription_prompt(update: Update, context: CallbackContext, sub
         reply_markup = InlineKeyboardMarkup(keyboard)
         sent_msg = await update.message.reply_text(
             f"📢 Quyidagi {sub_type.upper()} sahifasiga obuna bo‘ling:\n{identifier}\n\n"
-            f"Obuna bo‘lgach, pastdagi tugmani bosing.\n"
-            f"⚠️ Tugmani 5 soniyadan keyin bosishingiz kerak.",
+            "Obuna bo‘lgach, pastdagi tugmani bosing.\n"
+            "⚠️ Tugmani 5 soniyadan keyin bosishingiz kerak.",
             reply_markup=reply_markup
         )
-        # Vaqtni saqlaymiz
         context.user_data[f"sub_wait_{sub_id}"] = datetime.now() + timedelta(seconds=5)
         context.user_data[f"sub_msg_id_{sub_id}"] = sent_msg.message_id
         return False
@@ -118,7 +118,6 @@ async def subscription_callback(update: Update, context: CallbackContext):
     if not wait_until or datetime.now() < wait_until:
         await query.edit_message_text("⏳ Iltimos, 5 soniya kuting va keyin tugmani bosing.")
         return
-    # Tasdiqlash
     deactivated = await mark_user_completed_sub(user_id, sub_id)
     await query.edit_message_text("✅ Obuna tasdiqlandi! Endi botdan foydalanishingiz mumkin.")
     if deactivated:
@@ -126,7 +125,6 @@ async def subscription_callback(update: Update, context: CallbackContext):
             chat_id=ADMIN_ID,
             text=f"⚠️ Majburiy obuna (ID={sub_id}) o‘z limitiga yetdi va avtomatik o‘chirildi."
         )
-    # Qolgan majburiy obunalarni tekshirish uchun start ni qayta chaqiramiz
     await start(update, context)
 
 # -------------------- Start (majburiy obuna tekshiruvi bilan) --------------------
@@ -135,34 +133,32 @@ async def start(update: Update, context: CallbackContext):
     referral_code = context.args[0] if context.args else None
     await register_user_start(user_id, referral_code)
 
-    # Majburiy obunalarni tekshirish
     subs = await get_active_mandatory_subs()
     for sub in subs:
         completed = await is_user_completed_sub(user_id, sub["id"])
         if completed:
             continue
         result = await send_subscription_prompt(update, context, sub["id"], sub["type"], sub["identifier"])
-        if not result:  # bajarilmagan
+        if not result:
             return
-    # Agar hammasi bajarilgan bo‘lsa
+
     await update.message.reply_text(
-        "🎬 **Kino botiga xush kelibsiz!**\n"
-        "📣 Kino kanalimiz: @kino\\_boru\n\n"
+        "🎬 Kino botiga xush kelibsiz!\n"
+        "📣 Kino kanalimiz: @kino_boru\n\n"
         "Film kodini raqamlarda yuboring.\n"
-        "Admin: /admin",
-        parse_mode="Markdown"
+        "Admin: /admin"
     )
     await send_ad(context.bot, user_id)
 
-# -------------------- Admin panel --------------------
+# -------------------- Admin panel (HTML format) --------------------
 async def admin(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Siz admin emassiz!")
         return
     await update.message.reply_text(
-        "🔧 **Admin panel**\n"
+        "<b>🔧 Admin panel</b>\n"
         "/addvideo - yangi video qo'shish\n"
-        "/delvideo <kod> - o'chirish\n"
+        "/delvideo &lt;kod&gt; - o'chirish\n"
         "/list - barcha videolar\n"
         "/stats - statistika\n"
         "/broadcast - obunachilarga xabar\n"
@@ -171,11 +167,11 @@ async def admin(update: Update, context: CallbackContext):
         "/setad - start/kino reklama o'rnatish\n"
         "/removead - reklamani o'chirish\n"
         "/adstats - reklama statistikasi\n\n"
-        "📛 **Majburiy obuna**\n"
-        "/add_mandatory <type> <identifier> <limit>\n"
-        "/remove_mandatory <id>\n"
+        "<b>📛 Majburiy obuna</b>\n"
+        "/add_mandatory &lt;type&gt; &lt;identifier&gt; &lt;limit&gt;\n"
+        "/remove_mandatory &lt;id&gt;\n"
         "/list_mandatory",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 # -------------------- Statistika --------------------
@@ -188,12 +184,11 @@ async def stats(update: Update, context: CallbackContext):
     week = await get_week_users()
     active = await get_active_users_last_24h()
     await update.message.reply_text(
-        f"📊 **Statistika**\n\n"
+        f"📊 Statistika\n\n"
         f"👥 Umumiy: {total}\n"
         f"🆕 Bugun: {today}\n"
         f"📅 7 kunda: {week}\n"
-        f"🟢 24 soatda faol: {active}",
-        parse_mode="Markdown"
+        f"🟢 24 soatda faol: {active}"
     )
 
 # -------------------- Broadcast --------------------
@@ -215,9 +210,7 @@ async def broadcast_send(update: Update, context: CallbackContext):
     user_ids = await get_all_user_ids()
     total = len(user_ids)
     progress_msg = await msg.reply_text(f"📤 {total} ta foydalanuvchiga jo‘natish boshlandi...")
-    asyncio.create_task(
-        _broadcast_task(msg=msg, progress_msg=progress_msg, user_ids=user_ids, total=total)
-    )
+    asyncio.create_task(_broadcast_task(msg, progress_msg, user_ids, total))
     return ConversationHandler.END
 
 async def _broadcast_task(msg, progress_msg, user_ids, total):
@@ -246,7 +239,7 @@ async def addvideo_video(update: Update, context: CallbackContext):
         return WAITING_FOR_VIDEO
     file_id = update.message.video.file_id
     context.user_data['file_id'] = file_id
-    await update.message.reply_text("🔢 Ushbu video uchun **kod** kiriting (faqat raqamlar):")
+    await update.message.reply_text("🔢 Ushbu video uchun kod kiriting (faqat raqamlar):")
     return WAITING_FOR_CUSTOM_CODE
 
 async def addvideo_custom_code(update: Update, context: CallbackContext):
@@ -256,7 +249,7 @@ async def addvideo_custom_code(update: Update, context: CallbackContext):
         return WAITING_FOR_CUSTOM_CODE
     existing = await get_video(code)
     if existing:
-        await update.message.reply_text(f"⚠️ `{code}` kodi allaqachon mavjud. Boshqa kod kiriting:", parse_mode="Markdown")
+        await update.message.reply_text(f"⚠️ {code} kodi allaqachon mavjud. Boshqa kod kiriting:")
         return WAITING_FOR_CUSTOM_CODE
     context.user_data['code'] = code
     await update.message.reply_text("✍️ Tavsif yozing (yoki /skip o‘tkazib yuborish)")
@@ -270,10 +263,7 @@ async def addvideo_description(update: Update, context: CallbackContext):
         await update.message.reply_text("Xatolik, qaytadan /addvideo bosing")
         return ConversationHandler.END
     await add_video(code, file_id, description)
-    await update.message.reply_text(
-        f"✅ Video saqlandi!\n**Kod:** `{code}`\n**Tavsif:** {description}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"✅ Video saqlandi!\nKod: {code}\nTavsif: {description}")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -284,10 +274,7 @@ async def addvideo_skip(update: Update, context: CallbackContext):
         await update.message.reply_text("Xatolik, qaytadan /addvideo bosing")
         return ConversationHandler.END
     await add_video(code, file_id, "")
-    await update.message.reply_text(
-        f"✅ Video saqlandi!\n**Kod:** `{code}`\nTavsifsiz",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"✅ Video saqlandi!\nKod: {code}\nTavsifsiz")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -307,9 +294,9 @@ async def delvideo(update: Update, context: CallbackContext):
     video = await get_video(code)
     if video:
         await delete_video(code)
-        await update.message.reply_text(f"✅ `{code}` o‘chirildi.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ {code} o‘chirildi.")
     else:
-        await update.message.reply_text(f"❌ `{code}` topilmadi.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ {code} topilmadi.")
 
 async def listvideos(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
@@ -319,10 +306,10 @@ async def listvideos(update: Update, context: CallbackContext):
     if not videos:
         await update.message.reply_text("📭 Hech qanday video yo‘q.")
         return
-    text = "📋 **Barcha videolar:**\n"
+    text = "📋 Barcha videolar:\n"
     for code, desc in videos:
-        text += f"🔹 Kod: `{code}` — {desc or 'Tavsifsiz'}\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+        text += f"🔹 Kod: {code} — {desc or 'Tavsifsiz'}\n"
+    await update.message.reply_text(text)
 
 # -------------------- Referal tizimi --------------------
 async def createref_start(update: Update, context: CallbackContext):
@@ -340,7 +327,7 @@ async def createref_get_name(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Iltimos, bo‘sh bo‘lmagan nom kiriting.")
         return WAITING_REF_NAME
 
-    bot_username = "KINO_bor_botbot"  # Bot username o‘zingiznikiga moslang
+    bot_username = "kinokinoborbot"  # O‘z username bilan almashtiring
     while True:
         code = secrets.token_hex(3)
         if not await check_referral_code(code):
@@ -348,11 +335,10 @@ async def createref_get_name(update: Update, context: CallbackContext):
     await create_referral(name, code)
     link = f"https://t.me/{bot_username}?start={code}"
     await update.message.reply_text(
-        f"✅ **Yangi referal havola yaratildi**\n\n"
-        f"📌 Nomi: `{name}`\n"
+        f"✅ Yangi referal havola yaratildi\n\n"
+        f"📌 Nomi: {name}\n"
         f"🔗 Havola: {link}\n"
-        f"🆔 Kod: `{code}`",
-        parse_mode="Markdown"
+        f"🆔 Kod: {code}"
     )
     return ConversationHandler.END
 
@@ -364,10 +350,10 @@ async def refstats(update: Update, context: CallbackContext):
     if not referrals:
         await update.message.reply_text("📭 Hali hech qanday referal havola yo‘q.")
         return
-    text = "📊 **Referallar statistikasi**\n\n"
+    text = "📊 Referallar statistikasi\n\n"
     for code, name, count in referrals:
-        text += f"• `{name}` (kod: `{code}`) – {count} ta foydalanuvchi\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+        text += f"• {name} (kod: {code}) – {count} ta foydalanuvchi\n"
+    await update.message.reply_text(text)
 
 # -------------------- Reklama tizimi --------------------
 async def setad_start(update: Update, context: CallbackContext):
@@ -419,8 +405,7 @@ async def setad_get_content(update: Update, context: CallbackContext):
     await update.message.reply_text(
         f"✅ Reklama saqlandi!\n"
         f"Turi: {content_type}\n"
-        f"Endi har bir /start va kino kodidan keyin avtomatik yuboriladi.",
-        parse_mode="Markdown"
+        f"Endi har bir /start va kino kodidan keyin avtomatik yuboriladi."
     )
     return ConversationHandler.END
 
@@ -474,18 +459,24 @@ async def list_mandatory(update: Update, context: CallbackContext):
     if not rows:
         await update.message.reply_text("Hech qanday majburiy obuna yo‘q.")
         return
-    text = "📋 **Majburiy obunalar:**\n"
+    text = "📋 Majburiy obunalar:\n"
     for row in rows:
-        id_, type_, ident, limit_, count_, active_ = row
+        # row -> asyncpg.Record, index yoki attribute bilan olish
+        id_ = row["id"]
+        type_ = row["type"]
+        ident = row["identifier"]
+        limit_ = row["limit_count"]
+        count_ = row["current_count"]
+        active_ = row["is_active"]
         status = "✅ faol" if active_ else "❌ faol emas"
         text += f"ID {id_}: {type_} {ident} | limit {limit_} | hozir {count_} | {status}\n"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
-# -------------------- Kod yuborish (video + havolalar + reklama) --------------------
+# -------------------- Kod yuborish --------------------
 async def handle_code(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
 
-    # Majburiy obuna tekshiruvi (agar bajarilmagan bo‘lsa, to‘xtatamiz)
+    # Majburiy obuna tekshiruvi
     subs = await get_active_mandatory_subs()
     for sub in subs:
         if not await is_user_completed_sub(user_id, sub["id"]):
@@ -507,16 +498,14 @@ async def handle_code(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ Video yuborishda xatolik yuz berdi.")
             return
 
-        # Videodan keyin avtomatik havolalar
         links_msg = (
             "📱 Instagram: https://instagram.com/Bear_uzb070\n"
             "📣 Kino kanal: @kino_boru"
         )
         await update.message.reply_text(links_msg)
-
         await send_ad(context.bot, user_id)
     else:
-        await update.message.reply_text(f"❌ `{text}` kodli video topilmadi.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ {text} kodli video topilmadi.")
 
 # -------------------- Webhook --------------------
 async def webhook_handler(request: Request):
@@ -535,7 +524,7 @@ async def main():
     await init_db()
     bot_application = Application.builder().token(BOT_TOKEN).build()
 
-    # Asosiy handlerlar
+    # Handlerlar
     bot_application.add_handler(CommandHandler("start", start))
     bot_application.add_handler(CommandHandler("admin", admin))
     bot_application.add_handler(CommandHandler("stats", stats))
@@ -550,8 +539,6 @@ async def main():
     bot_application.add_handler(CommandHandler("add_mandatory", add_mandatory))
     bot_application.add_handler(CommandHandler("remove_mandatory", remove_mandatory))
     bot_application.add_handler(CommandHandler("list_mandatory", list_mandatory))
-
-    # Callback query (obuna tugmasi)
     bot_application.add_handler(CallbackQueryHandler(subscription_callback, pattern="^confirm_sub_"))
 
     # Video qo'shish conversation
@@ -599,7 +586,7 @@ async def main():
     )
     bot_application.add_handler(ad_conv)
 
-    # Kod qabul qilish (oddiy matn)
+    # Kod qabul qilish
     bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_code))
 
     await bot_application.initialize()
