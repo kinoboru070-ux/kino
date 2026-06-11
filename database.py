@@ -3,6 +3,7 @@ from config import DATABASE_URL
 
 async def init_db():
     conn = await asyncpg.connect(DATABASE_URL)
+    
     # Videos jadvali
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS videos (
@@ -11,6 +12,7 @@ async def init_db():
             description TEXT
         )
     ''')
+    
     # Users jadvali
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -19,8 +21,8 @@ async def init_db():
             last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # referral ustuni (mavjud bo‘lmasa qo‘shiladi)
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by TEXT")
+    
     # Referallar jadvali
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS referrals (
@@ -29,7 +31,8 @@ async def init_db():
             count INTEGER DEFAULT 0
         )
     ''')
-    # Reklama jadvali (start va kino kodidan keyin chiqadigan)
+    
+    # Reklama jadvali
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS ads (
             id INTEGER PRIMARY KEY DEFAULT 1,
@@ -40,12 +43,34 @@ async def init_db():
             send_count INTEGER DEFAULT 0
         )
     ''')
-    # Agar ads jadvali bo‘sh bo‘lsa, DEFAULT 1 qator qo‘shamiz (ixtiyoriy, keyinchalik set_ad bilan to‘ldiriladi)
     await conn.execute('''
         INSERT INTO ads (id, content_type, file_id, text, caption, send_count)
         VALUES (1, 'empty', NULL, NULL, NULL, 0)
         ON CONFLICT (id) DO NOTHING
     ''')
+    
+    # ========== Majburiy obunalar uchun yangi jadvallar ==========
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS mandatory_subscriptions (
+            id SERIAL PRIMARY KEY,
+            type TEXT NOT NULL,            -- 'telegram', 'youtube', 'instagram'
+            identifier TEXT NOT NULL,
+            limit_count INTEGER NOT NULL,
+            current_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS user_completed_subs (
+            user_id BIGINT NOT NULL,
+            sub_id INTEGER NOT NULL,
+            completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, sub_id)
+        )
+    ''')
+    
     await conn.close()
 
 # ==================== Video funksiyalar ====================
@@ -74,9 +99,8 @@ async def list_all_videos():
     await conn.close()
     return [(r["code"], r["description"]) for r in rows]
 
-# ==================== Foydalanuvchi funksiyalari ====================
+# ==================== Foydalanuvchi funksiyalar ====================
 async def register_user(user_id):
-    """Eski nom, ichida yangi funksiyani chaqiradi"""
     await register_user_start(user_id)
 
 async def register_user_start(user_id, referral_code=None):
@@ -132,7 +156,7 @@ async def get_all_user_ids():
     await conn.close()
     return [row["user_id"] for row in rows]
 
-# ==================== Referal funksiyalari ====================
+# ==================== Referal funksiyalar ====================
 async def create_referral(name, code):
     conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute(
@@ -153,9 +177,8 @@ async def get_all_referrals():
     await conn.close()
     return [(r["code"], r["name"], r["count"]) for r in rows]
 
-# ==================== Reklama funksiyalari ====================
+# ==================== Reklama funksiyalar ====================
 async def set_ad(content_type, file_id=None, text=None, caption=None):
-    """Eski reklamani o'chirib, yangisini yozadi (id=1)."""
     conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute("DELETE FROM ads WHERE id = 1")
     await conn.execute(
@@ -165,7 +188,6 @@ async def set_ad(content_type, file_id=None, text=None, caption=None):
     await conn.close()
 
 async def get_ad():
-    """Joriy reklamani qaytaradi yoki None."""
     conn = await asyncpg.connect(DATABASE_URL)
     row = await conn.fetchrow("SELECT content_type, file_id, text, caption, send_count FROM ads WHERE id = 1")
     await conn.close()
@@ -174,13 +196,78 @@ async def get_ad():
     return None
 
 async def remove_ad():
-    """Reklamani o'chiradi (empty holatiga qaytaradi)."""
     conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute("UPDATE ads SET content_type='empty', file_id=NULL, text=NULL, caption=NULL, send_count=0 WHERE id=1")
     await conn.close()
 
 async def increment_ad_count():
-    """Reklama yuborilganda hisoblagichni oshiradi."""
     conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute("UPDATE ads SET send_count = send_count + 1 WHERE id = 1")
     await conn.close()
+
+# ==================== Majburiy obuna funksiyalar ====================
+async def get_active_mandatory_subs():
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch(
+        "SELECT id, type, identifier, limit_count, current_count FROM mandatory_subscriptions WHERE is_active = 1"
+    )
+    await conn.close()
+    return [{"id": r["id"], "type": r["type"], "identifier": r["identifier"], 
+             "limit": r["limit_count"], "count": r["current_count"]} for r in rows]
+
+async def is_user_completed_sub(user_id: int, sub_id: int) -> bool:
+    conn = await asyncpg.connect(DATABASE_URL)
+    row = await conn.fetchval(
+        "SELECT 1 FROM user_completed_subs WHERE user_id = $1 AND sub_id = $2",
+        user_id, sub_id
+    )
+    await conn.close()
+    return row is not None
+
+async def mark_user_completed_sub(user_id: int, sub_id: int) -> bool:
+    conn = await asyncpg.connect(DATABASE_URL)
+    async with conn.transaction():
+        # Insert ignore (agar mavjud bo‘lsa, hech narsa qilmaydi)
+        await conn.execute(
+            "INSERT INTO user_completed_subs (user_id, sub_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            user_id, sub_id
+        )
+        await conn.execute(
+            "UPDATE mandatory_subscriptions SET current_count = current_count + 1 WHERE id = $1",
+            sub_id
+        )
+        # Limitga yetganligini tekshirish
+        row = await conn.fetchrow(
+            "SELECT current_count, limit_count FROM mandatory_subscriptions WHERE id = $1",
+            sub_id
+        )
+        if row and row["current_count"] >= row["limit_count"]:
+            await conn.execute(
+                "UPDATE mandatory_subscriptions SET is_active = 0 WHERE id = $1",
+                sub_id
+            )
+            await conn.commit()
+            return True  # deactivated
+    await conn.close()
+    return False
+
+async def add_mandatory_subscription(sub_type: str, identifier: str, limit_count: int):
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute(
+        "INSERT INTO mandatory_subscriptions (type, identifier, limit_count) VALUES ($1, $2, $3)",
+        sub_type, identifier, limit_count
+    )
+    await conn.close()
+
+async def remove_mandatory_subscription(sub_id: int):
+    conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute("DELETE FROM mandatory_subscriptions WHERE id = $1", sub_id)
+    await conn.close()
+
+async def list_mandatory_subscriptions():
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch(
+        "SELECT id, type, identifier, limit_count, current_count, is_active FROM mandatory_subscriptions ORDER BY id"
+    )
+    await conn.close()
+    return rows  # har bir row dict (yoki tuple bo‘lib keladi, lekin .values() bilan ishlatish mumkin)
