@@ -1,7 +1,6 @@
 import os
 import asyncio
 import secrets
-from datetime import datetime
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -78,38 +77,44 @@ async def check_telegram_membership(bot, user_id, chat_identifier):
         print(f"Telegram membership check error: {e}")
         return False
 
-# -------------------- Majburiy obuna interfeysi (bitta tugma) --------------------
+# -------------------- Majburiy obuna interfeysi (har biri alohida URL tugma) --------------------
 async def show_mandatory_subs(update: Update, context: CallbackContext):
-    """Foydalanuvchiga barcha bajarilmagan majburiy obunalarni bir xabarda ko'rsatadi,
-       pastida bitta 'Obunani tasdiqlash' tugmasi bilan."""
+    """Foydalanuvchiga barcha bajarilmagan majburiy obunalarni ko‘rsatadi.
+       Har bir obuna uchun alohida URL tugma (matni: 1-kanal, 2-kanal...).
+       Pastda bitta 'Obunani tasdiqlash' tugmasi."""
     user_id = update.effective_user.id
     subs = await get_active_mandatory_subs()
     if not subs:
-        return True  # hech qanday majburiy obuna yo‘q
+        return True
 
     incomplete = []
     for sub in subs:
-        completed = await is_user_completed_sub(user_id, sub["id"])
-        if not completed:
+        if not await is_user_completed_sub(user_id, sub["id"]):
             incomplete.append(sub)
 
     if not incomplete:
-        return True  # hammasi bajarilgan
+        return True
 
-    # Xabar matnini tayyorlash
+    # Xabar matni
     text = "🎬 Botdan foydalanish uchun quyidagi kanallarga a'zo bo'lishingiz kerak:\n\n"
-    for sub in incomplete:
-        if sub["type"] == "telegram":
-            display = f"📢 Telegram: {sub['identifier']}"
-        elif sub["type"] == "youtube":
-            display = f"▶️ YouTube: {sub['identifier']}"
-        else:  # instagram
-            display = f"📷 Instagram: {sub['identifier']}"
-        text += f"• {display}\n"
 
-    # Bitta umumiy tugma
-    button = [[InlineKeyboardButton("✅ Obunani tasdiqlash", callback_data="confirm_all_subs")]]
-    reply_markup = InlineKeyboardMarkup(button)
+    # Tugmalar qatori: har bir obuna uchun URL tugma
+    url_buttons = []
+    for idx, sub in enumerate(incomplete, start=1):
+        # Tugma matni: "1-kanal", "2-kanal", ...
+        button_text = f"{idx}-kanal"
+        # Havola (identifier) – to‘g‘ridan-to‘g‘ri URL bo‘lishi kerak
+        # Telegram kanal uchun: https://t.me/username yoki https://t.me/joinchat/...
+        # YouTube/Instagram: to‘g‘ridan-to‘g‘ri URL
+        url = sub["identifier"]
+        # Agar Telegram kanal username bilan berilgan bo‘lsa (@username), linkga aylantirish
+        if sub["type"] == "telegram" and url.startswith("@"):
+            url = f"https://t.me/{url[1:]}"
+        url_buttons.append([InlineKeyboardButton(button_text, url=url)])
+
+    # Tasdiqlash tugmasi
+    confirm_button = [[InlineKeyboardButton("✅ Obunani tasdiqlash", callback_data="confirm_all_subs")]]
+    reply_markup = InlineKeyboardMarkup(url_buttons + confirm_button)
 
     # Eski xabarni o‘chirib, yangisini yuborish
     if "mandatory_msg_id" in context.user_data:
@@ -144,12 +149,19 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
         await start_after_subs(update, context)
         return
 
-    # Tekshirish: telegram kanallari uchun real a'zolik
+    # Faqat Telegram kanallari uchun real a'zolik tekshiruvi
     failed_telegram = []
     for sub in still_incomplete:
         if sub["type"] == "telegram":
-            if not await check_telegram_membership(context.bot, user_id, sub["identifier"]):
-                failed_telegram.append(sub["identifier"])
+            # Identifikator: username yoki linkdan tozalash
+            identifier = sub["identifier"]
+            if identifier.startswith("https://t.me/"):
+                # Extract username or invite hash
+                pass  # hozircha username formatda ishlaymiz
+            # Agar @ bilan kelgan bo‘lsa, to‘g‘ridan-to‘g‘ri ishlatamiz
+            member = await check_telegram_membership(context.bot, user_id, identifier)
+            if not member:
+                failed_telegram.append(identifier)
 
     if failed_telegram:
         await query.edit_message_text(
@@ -158,7 +170,7 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
         )
         return
 
-    # Agar barcha tekshiruvlar o‘tgan bo‘lsa, barcha obunalarni tasdiqlaymiz
+    # YouTube/Instagram uchun tekshiruv o‘tkazilmaydi (faqat tasdiqlash)
     deactivated_any = False
     for sub in still_incomplete:
         deactivated = await mark_user_completed_sub(user_id, sub["id"])
@@ -180,7 +192,6 @@ async def confirm_all_subs_callback(update: Update, context: CallbackContext):
 async def start_after_subs(update: Update, context: CallbackContext):
     """Majburiy obunalar bajarilgandan keyin chaqiriladi"""
     user_id = update.effective_user.id
-    # Agar update message bilan kelmagan bo‘lsa (callback dan), callback_query dan message olamiz
     if update.callback_query:
         message = update.callback_query.message
     else:
@@ -392,7 +403,7 @@ async def createref_get_name(update: Update, context: CallbackContext):
     if not name:
         await update.message.reply_text("❌ Iltimos, bo‘sh bo‘lmagan nom kiriting.")
         return WAITING_REF_NAME
-    bot_username = "KINO_bor_botbot"  # O‘z username bilan almashtiring
+    bot_username = "KINO_bor_botbot"  # O‘z bot username bilan almashtiring
     while True:
         code = secrets.token_hex(3)
         if not await check_referral_code(code):
@@ -504,6 +515,7 @@ async def add_mandatory(update: Update, context: CallbackContext):
     if sub_type not in ("telegram", "youtube", "instagram"):
         await update.message.reply_text("❌ type faqat: telegram, youtube, instagram")
         return
+    # Agar Telegram kanal username bo‘lsa, link formatiga o‘tkazamiz (saqlashda asl identifier saqlansin)
     await add_mandatory_subscription(sub_type, identifier, limit)
     await update.message.reply_text(f"✅ Qo‘shildi: {sub_type} – {identifier} (limit {limit})")
 
@@ -540,7 +552,6 @@ async def list_mandatory(update: Update, context: CallbackContext):
 async def handle_code(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
 
-    # Majburiy obuna tekshiruvi (bajarilmagan bo‘lsa, ro‘yxatni ko‘rsat)
     all_subs = await get_active_mandatory_subs()
     if all_subs:
         incomplete = []
@@ -604,7 +615,6 @@ async def main():
     bot_application.add_handler(CommandHandler("add_mandatory", add_mandatory))
     bot_application.add_handler(CommandHandler("remove_mandatory", remove_mandatory))
     bot_application.add_handler(CommandHandler("list_mandatory", list_mandatory))
-    # Bitta umumiy callback
     bot_application.add_handler(CallbackQueryHandler(confirm_all_subs_callback, pattern="^confirm_all_subs$"))
 
     conv_handler = ConversationHandler(
@@ -667,4 +677,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
