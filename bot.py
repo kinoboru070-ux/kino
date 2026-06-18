@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from config import BOT_TOKEN, ADMIN_ID
 from database import (
     init_db, register_user_start, get_all_user_ids,
-    add_series, get_all_series,
+    add_series, get_all_series, get_series_id_by_name,
     add_episode, get_episode_by_code, get_episode_by_serial_and_number,
     get_episodes_count, get_free_episodes_count, set_free_episodes_count,
     is_user_subscribed, set_subscription, remove_subscription, get_all_subscribed_users,
@@ -37,6 +37,11 @@ WAITING_TELEGRAM_LINK = 7
 WAITING_BROADCAST = 8
 WAITING_REF_NAME = 9
 WAITING_AD_CONTENT = 10
+
+# Bulk qo‘shish uchun yangi holatlar
+WAITING_BULK_SERIES_ID = 11
+WAITING_BULK_VIDEO = 12
+WAITING_BULK_DONE = 13
 
 # -------------------- Webhook --------------------
 WEBHOOK_PATH = "/webhook"
@@ -75,20 +80,19 @@ async def send_ad_to_user(bot, chat_id):
     except Exception as e:
         print(f"Reklama yuborishda xatolik: {e}")
 
-# -------------------- Serial tugmasi bosilganda --------------------
+# -------------------- Serial epizodini ko‘rsatish --------------------
 async def show_series_episodes(update: Update, context: CallbackContext, serial_id: int, episode_num: int = 1):
-    """Serialning ma'lum epizodini ko'rsatadi"""
+    """Serialning ma'lum epizodini ko'rsatadi - callback va oddiy xabar uchun ishlaydi"""
     user_id = update.effective_user.id
-    # Serial nomini olish
     series = await get_all_series()
     serial_name = next((s["name"] for s in series if s["id"] == serial_id), None)
     if not serial_name:
-        await update.message.reply_text("Serial topilmadi.")
+        await update.effective_message.reply_text("Serial topilmadi.")
         return
 
     total_episodes = await get_episodes_count(serial_id)
     if total_episodes == 0:
-        await update.message.reply_text("Bu serialda hali epizod yo‘q.")
+        await update.effective_message.reply_text("Bu serialda hali epizod yo‘q.")
         return
 
     if episode_num < 1:
@@ -96,21 +100,16 @@ async def show_series_episodes(update: Update, context: CallbackContext, serial_
     elif episode_num > total_episodes:
         episode_num = total_episodes
 
-    # Epizodni olish
     episode = await get_episode_by_serial_and_number(serial_id, episode_num)
     if not episode:
-        await update.message.reply_text("Epizod topilmadi.")
+        await update.effective_message.reply_text("Epizod topilmadi.")
         return
 
-    # Bepul/pullik tekshiruvi
     free_count = await get_free_episodes_count(serial_id)
     is_free = episode_num <= free_count
     if not is_free and not await is_user_subscribed(user_id):
-        # Pullik epizod, obuna yo‘q
-        keyboard = [
-            [InlineKeyboardButton("💰 Obuna bo‘lish", callback_data=f"subscribe_{serial_id}_{episode_num}")]
-        ]
-        await update.message.reply_text(
+        keyboard = [[InlineKeyboardButton("💰 Obuna bo‘lish", callback_data=f"subscribe_{serial_id}_{episode_num}")]]
+        await update.effective_message.reply_text(
             f"⛔ Bu epizod (№{episode_num}) pullik.\n"
             f"Qolgan epizodlarni ko‘rish uchun obuna bo‘ling.\n"
             "Quyidagi tugmani bosing va admin tasdiqlashini kuting.",
@@ -118,24 +117,22 @@ async def show_series_episodes(update: Update, context: CallbackContext, serial_
         )
         return
 
-    # Videoni yuborish
     caption = f"🎬 {serial_name.upper()} – {episode_num}-epizod"
     if episode["description"]:
         caption += f"\n📖 {episode['description']}"
 
     try:
-        await update.message.reply_video(
+        await update.effective_message.reply_video(
             video=episode["file_id"],
             caption=caption,
             supports_streaming=True,
             protect_content=True
         )
     except Exception as e:
-        await update.message.reply_text("❌ Videoni yuborishda xatolik.")
+        await update.effective_message.reply_text("❌ Videoni yuborishda xatolik.")
         print(e)
         return
 
-    # Navigatsiya tugmalari
     nav_buttons = []
     if episode_num > 1:
         nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"ep_{serial_id}_{episode_num-1}"))
@@ -146,10 +143,7 @@ async def show_series_episodes(update: Update, context: CallbackContext, serial_
     else:
         nav_buttons.append(InlineKeyboardButton("▶️", callback_data="noop"))
 
-    # Jo'natish tugmasi
     share_button = InlineKeyboardButton("📤 Jo‘natish", callback_data=f"share_{serial_id}_{episode_num}")
-
-    # Instagram va Telegram havolalari
     links = await get_button_links()
     insta_button = InlineKeyboardButton("📱 Instagram", url=links["instagram_url"])
     tg_button = InlineKeyboardButton("📣 Telegram kanal", url=links["telegram_url"])
@@ -161,7 +155,78 @@ async def show_series_episodes(update: Update, context: CallbackContext, serial_
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text("Quyidagi tugmalar orqali boshqa epizodlarga o‘ting:", reply_markup=reply_markup)
+    await update.effective_message.reply_text(
+        "Quyidagi tugmalar orqali boshqa epizodlarga o‘ting:",
+        reply_markup=reply_markup
+    )
+
+# -------------------- Kod bo‘yicha epizodni ko‘rsatish --------------------
+async def show_episode_direct(update: Update, context: CallbackContext, serial_id: int, episode_num: int):
+    user_id = update.effective_user.id
+    series = await get_all_series()
+    serial_name = next((s["name"] for s in series if s["id"] == serial_id), None)
+    if not serial_name:
+        await update.effective_message.reply_text("Serial topilmadi.")
+        return
+
+    episode = await get_episode_by_serial_and_number(serial_id, episode_num)
+    if not episode:
+        await update.effective_message.reply_text("Epizod topilmadi.")
+        return
+
+    free_count = await get_free_episodes_count(serial_id)
+    is_free = episode_num <= free_count
+    if not is_free and not await is_user_subscribed(user_id):
+        keyboard = [[InlineKeyboardButton("💰 Obuna bo‘lish", callback_data=f"subscribe_{serial_id}_{episode_num}")]]
+        await update.effective_message.reply_text(
+            f"⛔ Bu epizod (№{episode_num}) pullik.\n"
+            f"Obuna bo‘lish uchun quyidagi tugmani bosing.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    caption = f"🎬 {serial_name.upper()} – {episode_num}-epizod"
+    if episode["description"]:
+        caption += f"\n📖 {episode['description']}"
+
+    try:
+        await update.effective_message.reply_video(
+            video=episode["file_id"],
+            caption=caption,
+            supports_streaming=True,
+            protect_content=True
+        )
+    except Exception as e:
+        await update.effective_message.reply_text("❌ Videoni yuborishda xatolik.")
+        print(e)
+        return
+
+    total_episodes = await get_episodes_count(serial_id)
+    nav_buttons = []
+    if episode_num > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"ep_{serial_id}_{episode_num-1}"))
+    else:
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data="noop"))
+    if episode_num < total_episodes:
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"ep_{serial_id}_{episode_num+1}"))
+    else:
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data="noop"))
+
+    share_button = InlineKeyboardButton("📤 Jo‘natish", callback_data=f"share_{serial_id}_{episode_num}")
+    links = await get_button_links()
+    insta_button = InlineKeyboardButton("📱 Instagram", url=links["instagram_url"])
+    tg_button = InlineKeyboardButton("📣 Telegram kanal", url=links["telegram_url"])
+
+    keyboard = [
+        nav_buttons,
+        [share_button],
+        [insta_button, tg_button]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.effective_message.reply_text(
+        "Quyidagi tugmalar orqali boshqa epizodlarga o‘ting:",
+        reply_markup=reply_markup
+    )
 
 # -------------------- Start --------------------
 async def start(update: Update, context: CallbackContext):
@@ -169,19 +234,17 @@ async def start(update: Update, context: CallbackContext):
     referral_code = context.args[0] if context.args else None
     await register_user_start(user_id, referral_code)
 
-    # Barcha seriallarni olish
     series_list = await get_all_series()
     if not series_list:
         await update.message.reply_text("🎬 Hozircha hech qanday serial mavjud emas.")
         await send_ad_to_user(context.bot, user_id)
         return
 
-    # Tugmalar yaratish (2-3 qator)
     buttons = []
     row = []
     for idx, s in enumerate(series_list, start=1):
         row.append(InlineKeyboardButton(s["name"], callback_data=f"series_{s['id']}"))
-        if idx % 2 == 0:  # har 2 tugmadan keyin yangi qator
+        if idx % 2 == 0:
             buttons.append(row)
             row = []
     if row:
@@ -204,13 +267,10 @@ async def callback_handler(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
 
     if data.startswith("series_"):
-        # Serial tanlandi -> birinchi epizodni ko‘rsat
         serial_id = int(data.split("_")[1])
         await show_series_episodes(update, context, serial_id, 1)
-        # callback query xabarini tahrirlash shart emas, yangi xabar yuboriladi
 
     elif data.startswith("ep_"):
-        # Navigatsiya: ep_serial_id_episode
         parts = data.split("_")
         if len(parts) != 3:
             return
@@ -219,7 +279,6 @@ async def callback_handler(update: Update, context: CallbackContext):
         await show_series_episodes(update, context, serial_id, episode_num)
 
     elif data.startswith("subscribe_"):
-        # Obuna so‘rovi
         parts = data.split("_")
         if len(parts) != 3:
             return
@@ -240,7 +299,6 @@ async def callback_handler(update: Update, context: CallbackContext):
         )
 
     elif data.startswith("share_"):
-        # Jo'natish (serial nomi va epizod raqami)
         parts = data.split("_")
         if len(parts) != 3:
             return
@@ -248,10 +306,13 @@ async def callback_handler(update: Update, context: CallbackContext):
         episode_num = int(parts[2])
         series = await get_all_series()
         serial_name = next((s["name"] for s in series if s["id"] == serial_id), "noma'lum")
+        ep = await get_episode_by_serial_and_number(serial_id, episode_num)
+        code = ep["code"] if ep else "?"
         await query.edit_message_text(
             f"🔗 {serial_name} – {episode_num}-epizod kod:\n"
-            f"Botga ushbu raqamni yuboring: `{await get_episode_by_serial_and_number(serial_id, episode_num)['code']}`\n"
-            "Do‘stingiz ushbu kodni botga yuborib, epizodni ko‘rishi mumkin."
+            f"Botga ushbu raqamni yuboring: `{code}`\n"
+            "Do‘stingiz ushbu kodni botga yuborib, epizodni ko‘rishi mumkin.",
+            parse_mode="Markdown"
         )
 
     elif data == "noop":
@@ -272,77 +333,9 @@ async def handle_text(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ {code} kodli epizod topilmadi.")
         return
 
-    # Epizodni ko'rsatish (show_series_episodes ga o'xshash, lekin direct)
     serial_id = episode["serial_id"]
     episode_num = episode["episode_number"]
-    # show_series_episodes funksiyasini chaqiramiz (lekin u update.message ishlatadi, shuning uchun uni adapt qilamiz)
-    # To'g'ridan-to'g'ri ko'rsatish uchun kichik funksiya yozamiz
     await show_episode_direct(update, context, serial_id, episode_num)
-
-async def show_episode_direct(update: Update, context: CallbackContext, serial_id: int, episode_num: int):
-    """Foydalanuvchi kod yuborganda epizodni ko'rsatish"""
-    user_id = update.effective_user.id
-    series = await get_all_series()
-    serial_name = next((s["name"] for s in series if s["id"] == serial_id), None)
-    if not serial_name:
-        await update.message.reply_text("Serial topilmadi.")
-        return
-
-    episode = await get_episode_by_serial_and_number(serial_id, episode_num)
-    if not episode:
-        await update.message.reply_text("Epizod topilmadi.")
-        return
-
-    free_count = await get_free_episodes_count(serial_id)
-    is_free = episode_num <= free_count
-    if not is_free and not await is_user_subscribed(user_id):
-        keyboard = [[InlineKeyboardButton("💰 Obuna bo‘lish", callback_data=f"subscribe_{serial_id}_{episode_num}")]]
-        await update.message.reply_text(
-            f"⛔ Bu epizod (№{episode_num}) pullik.\n"
-            f"Obuna bo‘lish uchun quyidagi tugmani bosing.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    caption = f"🎬 {serial_name.upper()} – {episode_num}-epizod"
-    if episode["description"]:
-        caption += f"\n📖 {episode['description']}"
-
-    try:
-        await update.message.reply_video(
-            video=episode["file_id"],
-            caption=caption,
-            supports_streaming=True,
-            protect_content=True
-        )
-    except Exception as e:
-        await update.message.reply_text("❌ Videoni yuborishda xatolik.")
-        print(e)
-        return
-
-    total_episodes = await get_episodes_count(serial_id)
-    nav_buttons = []
-    if episode_num > 1:
-        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"ep_{serial_id}_{episode_num-1}"))
-    else:
-        nav_buttons.append(InlineKeyboardButton("◀️", callback_data="noop"))
-    if episode_num < total_episodes:
-        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"ep_{serial_id}_{episode_num+1}"))
-    else:
-        nav_buttons.append(InlineKeyboardButton("▶️", callback_data="noop"))
-
-    share_button = InlineKeyboardButton("📤 Jo‘natish", callback_data=f"share_{serial_id}_{episode_num}")
-    links = await get_button_links()
-    insta_button = InlineKeyboardButton("📱 Instagram", url=links["instagram_url"])
-    tg_button = InlineKeyboardButton("📣 Telegram kanal", url=links["telegram_url"])
-
-    keyboard = [
-        nav_buttons,
-        [share_button],
-        [insta_button, tg_button]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Quyidagi tugmalar orqali boshqa epizodlarga o‘ting:", reply_markup=reply_markup)
 
 # -------------------- Admin buyruqlar --------------------
 async def admin(update: Update, context: CallbackContext):
@@ -353,7 +346,8 @@ async def admin(update: Update, context: CallbackContext):
         "<b>🔧 Admin panel</b>\n\n"
         "📌 Serial boshqaruvi:\n"
         "/add_series - yangi serial qo'shish\n"
-        "/add_episode - epizod qo'shish (avval serial tanlanadi)\n"
+        "/add_episode - bitta epizod qo'shish (serial ID, raqam, video)\n"
+        "/add_bulk - bir nechta epizodni birdan qo'shish (avtomatik raqamlanadi)\n"
         "/set_free &lt;serial_id&gt; &lt;count&gt; - bepul epizodlar soni\n"
         "/list_series - barcha seriallar\n\n"
         "💰 Obuna boshqaruvi:\n"
@@ -374,7 +368,7 @@ async def admin(update: Update, context: CallbackContext):
         parse_mode="HTML"
     )
 
-# -------------------- Add series --------------------
+# -------------------- Add series (single) --------------------
 async def add_series_start(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
@@ -384,14 +378,13 @@ async def add_series_start(update: Update, context: CallbackContext):
 async def add_series_name(update: Update, context: CallbackContext):
     name = update.message.text.strip()
     serial_id = await add_series(name)
-    await update.message.reply_text(f"✅ Serial qo‘shildi!\nID: {serial_id}\nNom: {name}\n\nEndi epizod qo‘shing: /add_episode")
+    await update.message.reply_text(f"✅ Serial qo‘shildi!\nID: {serial_id}\nNom: {name}\n\nEndi epizod qo‘shing: /add_episode yoki /add_bulk")
     return ConversationHandler.END
 
-# -------------------- Add episode (conversation) --------------------
+# -------------------- Add episode (single) --------------------
 async def add_episode_start(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
-    # Serial ro'yxatini ko'rsatish
     series = await get_all_series()
     if not series:
         await update.message.reply_text("Hech qanday serial yo‘q. Avval /add_series bilan serial qo‘shing.")
@@ -400,7 +393,7 @@ async def add_episode_start(update: Update, context: CallbackContext):
     for s in series:
         text += f"ID: {s['id']} – {s['name']}\n"
     await update.message.reply_text(text)
-    return WAITING_SERIES_NAME  # ID kiritish
+    return WAITING_SERIES_NAME
 
 async def add_episode_series_id(update: Update, context: CallbackContext):
     try:
@@ -408,7 +401,6 @@ async def add_episode_series_id(update: Update, context: CallbackContext):
     except ValueError:
         await update.message.reply_text("❌ Iltimos, raqam kiriting.")
         return WAITING_SERIES_NAME
-    # Serial mavjudligini tekshirish
     series = await get_all_series()
     if not any(s["id"] == serial_id for s in series):
         await update.message.reply_text("❌ Bunday ID li serial topilmadi.")
@@ -451,7 +443,6 @@ async def finish_add_episode(update: Update, context: CallbackContext):
     file_id = context.user_data["file_id"]
     desc = context.user_data.get("description", "")
 
-    # Bepul/pullik aniqlash
     free_count = await get_free_episodes_count(serial_id)
     is_free = ep_num <= free_count
 
@@ -463,6 +454,99 @@ async def finish_add_episode(update: Update, context: CallbackContext):
         f"Kod: {code}\n"
         f"Holat: {'Bepul' if is_free else 'Pullik'}"
     )
+
+# -------------------- Bulk add episodes (yangisi) --------------------
+async def add_bulk_start(update: Update, context: CallbackContext):
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    series = await get_all_series()
+    if not series:
+        await update.message.reply_text("Hech qanday serial yo‘q. Avval /add_series bilan serial qo‘shing.")
+        return ConversationHandler.END
+    text = "📌 Qaysi serialga epizod qo‘shmoqchisiz? Serial ID ni kiriting:\n"
+    for s in series:
+        text += f"ID: {s['id']} – {s['name']} (jami {await get_episodes_count(s['id'])} epizod)\n"
+    await update.message.reply_text(text)
+    return WAITING_BULK_SERIES_ID
+
+async def add_bulk_series_id(update: Update, context: CallbackContext):
+    try:
+        serial_id = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Iltimos, raqam kiriting.")
+        return WAITING_BULK_SERIES_ID
+    series = await get_all_series()
+    if not any(s["id"] == serial_id for s in series):
+        await update.message.reply_text("❌ Bunday ID li serial topilmadi.")
+        return WAITING_BULK_SERIES_ID
+    context.user_data["bulk_serial_id"] = serial_id
+    context.user_data["bulk_videos"] = []  # (file_id, description) list
+    await update.message.reply_text(
+        "📹 Endi videolarni birma-bir yuboring.\n"
+        "Har bir videodan keyin tavsif yozishingiz yoki /skip qilishingiz mumkin.\n"
+        "Barcha videolarni yuborganingizdan so‘ng /done deb yozing."
+    )
+    await update.message.reply_text("Iltimos, birinchi videoni yuboring:")
+    return WAITING_BULK_VIDEO
+
+async def add_bulk_video(update: Update, context: CallbackContext):
+    if not update.message.video:
+        await update.message.reply_text("❌ Iltimos, video fayl yuboring.")
+        return WAITING_BULK_VIDEO
+    # Saqlaymiz
+    file_id = update.message.video.file_id
+    context.user_data["bulk_temp_file"] = file_id
+    await update.message.reply_text("✍️ Tavsif yozing (yoki /skip o‘tkazib yuboring):")
+    return WAITING_BULK_DONE
+
+async def add_bulk_description(update: Update, context: CallbackContext):
+    desc = update.message.text
+    file_id = context.user_data.get("bulk_temp_file")
+    if not file_id:
+        await update.message.reply_text("Xatolik, qaytadan videoni yuboring.")
+        return WAITING_BULK_VIDEO
+    # Qo'shish ro'yxatga
+    context.user_data["bulk_videos"].append((file_id, desc))
+    context.user_data["bulk_temp_file"] = None
+    await update.message.reply_text(f"✅ {len(context.user_data['bulk_videos'])}-video saqlandi. Keyingi videoni yuboring yoki /done bosing.")
+    return WAITING_BULK_VIDEO
+
+async def add_bulk_skip(update: Update, context: CallbackContext):
+    file_id = context.user_data.get("bulk_temp_file")
+    if not file_id:
+        await update.message.reply_text("Xatolik, qaytadan videoni yuboring.")
+        return WAITING_BULK_VIDEO
+    context.user_data["bulk_videos"].append((file_id, ""))
+    context.user_data["bulk_temp_file"] = None
+    await update.message.reply_text(f"✅ {len(context.user_data['bulk_videos'])}-video saqlandi (tavsifsiz). Keyingi videoni yuboring yoki /done bosing.")
+    return WAITING_BULK_VIDEO
+
+async def add_bulk_done(update: Update, context: CallbackContext):
+    serial_id = context.user_data.get("bulk_serial_id")
+    videos = context.user_data.get("bulk_videos", [])
+    if not videos:
+        await update.message.reply_text("❌ Hech qanday video yuklanmagan. Bekor qilindi.")
+        return ConversationHandler.END
+
+    # Epizodlarni raqamlash
+    total_existing = await get_episodes_count(serial_id)
+    free_count = await get_free_episodes_count(serial_id)
+    saved = 0
+    for idx, (file_id, desc) in enumerate(videos, start=1):
+        ep_num = total_existing + idx
+        is_free = ep_num <= free_count
+        code = await add_episode(serial_id, ep_num, file_id, desc, is_free)
+        saved += 1
+        await update.message.reply_text(f"✅ Epizod {ep_num} saqlandi (kod: {code})")
+
+    await update.message.reply_text(
+        f"🎉 Jami {saved} ta epizod qo‘shildi.\n"
+        f"Serial ID: {serial_id}\n"
+        f"Bepul qismlar soni: {free_count}\n"
+        f"Endi foydalanuvchilar {total_existing+1}-epizoddan boshlab ko‘ra oladi."
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # -------------------- Set free count --------------------
 async def set_free(update: Update, context: CallbackContext):
@@ -679,6 +763,7 @@ async def adstats(update: Update, context: CallbackContext):
 
 # -------------------- Cancel --------------------
 async def cancel(update: Update, context: CallbackContext):
+    context.user_data.clear()
     await update.message.reply_text("Bekor qilindi.")
     return ConversationHandler.END
 
@@ -720,7 +805,7 @@ async def main():
     )
     bot_application.add_handler(add_series_conv)
 
-    # Conversation: add episode
+    # Conversation: add episode (single)
     add_episode_conv = ConversationHandler(
         entry_points=[CommandHandler("add_episode", add_episode_start)],
         states={
@@ -735,6 +820,24 @@ async def main():
         fallbacks=[CommandHandler("cancel", cancel)]
     )
     bot_application.add_handler(add_episode_conv)
+
+    # Conversation: bulk add episodes (yangi)
+    add_bulk_conv = ConversationHandler(
+        entry_points=[CommandHandler("add_bulk", add_bulk_start)],
+        states={
+            WAITING_BULK_SERIES_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_bulk_series_id)],
+            WAITING_BULK_VIDEO: [
+                MessageHandler(filters.VIDEO, add_bulk_video),
+                CommandHandler("done", add_bulk_done)
+            ],
+            WAITING_BULK_DONE: [
+                CommandHandler("skip", add_bulk_skip),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_bulk_description)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
+    )
+    bot_application.add_handler(add_bulk_conv)
 
     # Conversation: set links
     set_links_conv = ConversationHandler(
