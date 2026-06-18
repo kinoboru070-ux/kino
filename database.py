@@ -149,6 +149,12 @@ async def get_all_series():
     await conn.close()
     return rows
 
+async def get_series_id_by_name(name: str):
+    conn = await asyncpg.connect(DATABASE_URL)
+    row = await conn.fetchval("SELECT id FROM series WHERE name = $1", name)
+    await conn.close()
+    return row
+
 # -------------------- Epizod --------------------
 async def add_episode(serial_id: int, episode_number: int, file_id: str, description: str = "", is_free: bool = True) -> int:
     conn = await asyncpg.connect(DATABASE_URL)
@@ -202,15 +208,6 @@ async def set_free_episodes_count(serial_id: int, count: int):
         serial_id, count
     )
     await conn.close()
-
-async def get_episode_by_serial_and_number(serial_id: int, episode_number: int):
-    conn = await asyncpg.connect(DATABASE_URL)
-    row = await conn.fetchrow(
-        "SELECT e.*, s.name as serial_name FROM episodes e JOIN series s ON e.serial_id = s.id WHERE e.serial_id = $1 AND e.episode_number = $2",
-        serial_id, episode_number
-    )
-    await conn.close()
-    return row
 
 # -------------------- Obuna --------------------
 async def is_user_subscribed(user_id: int) -> bool:
