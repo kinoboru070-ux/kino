@@ -109,7 +109,9 @@ async def show_series_episodes(update: Update, context: CallbackContext, serial_
         await update.effective_message.reply_text(
             f"⛔ Bu epizod (№{episode_num}) pullik.\n"
             f"Qolgan epizodlarni ko‘rish uchun obuna bo‘ling.\n"
-            f"obuna narxi 10000 sum chekni adminga tashlang @coder070.\n"
+            f"obuna narxi 10000 sum chekni adminga tashlang @coder070.\n"   
+            f"6262570089299822 Agro bank uzkard URALOV. S.\n"
+            f"OBUNA BUTUN UMIRGA QOLADI!!.\n"
             f"OBUNA BUTUN UMIRGA QOLADI!!.\n"
             "Quyidagi tugmani bosing va admin tasdiqlashini kuting.",
             reply_markup=InlineKeyboardMarkup(keyboard)
